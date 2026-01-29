@@ -1,0 +1,74 @@
+processing_server/ (FastAPI + OpenCV)
+├── app/
+│   ├── .vscode/
+│   ├── api/
+│   │   ├── v1/
+│   │   │   ├── endpoints/
+│   │   │   │   ├── __pycache__/
+│   │   │   │   ├── advanced.py
+│   │   │   │   ├── health.py
+│   │   │   │   ├── jobs.py
+│   │   │   │   ├── process.py
+│   │   │   │   └── __init__.py
+│   │   │   ├── __pycache__/
+│   │   │   └── __init__.py
+│   │   └── __init__.py
+│   ├── core/
+│   │   ├── __pycache__/
+│   │   ├── cache.py
+│   │   ├── concurrency.py
+│   │   ├── config.py
+│   │   ├── exceptions.py
+│   │   ├── memory_manager.py
+│   │   ├── processor.py
+│   │   ├── security.py
+│   │   ├── timeout.py
+│   │   └── __init__.py
+│   ├── jobs/
+│   │   ├── job_db.py
+│   │   ├── manager.py
+│   │   ├── models.py
+│   │   ├── processors.py
+│   │   └── __init__.py
+│   ├── models/
+│   │   ├── __pycache__/
+│   │   ├── advanced_detection.py
+│   │   ├── detection.py
+│   │   ├── schemas.py
+│   │   ├── traditional_cv.py
+│   │   ├── yolo_wrapper.py
+│   │   └── __init__.py
+│   ├── processing/
+│   │   ├── __pycache__/
+│   │   ├── image_processor.py
+│   │   ├── motion_detector.py
+│   │   ├── video_processor.py
+│   │   └── __init__.py
+│   ├── utils/
+│   │   ├── __pycache__/
+│   │   ├── compression.py
+│   │   ├── file_handling.py
+│   │   ├── logger.py
+│   │   └── __init__.py
+│   └── __init__.py
+├── logs/
+├── models/
+├── processed/
+├── .env
+├── .env.example
+├── .gitignore
+├── debug_config.py
+├── download_model.py
+├── installed-requirementx.txt
+├── README.md
+├── start_server.py
+├── test_advanced.py
+├── test_api.py
+├── test_fix.py
+├── test_image.jpg
+├── test_import.py
+├── test_jobs.py
+├── test_performance.py
+├── test_server.py
+├── test_structure.py
+└── test_video_formats.py

@@ -504,3 +504,41 @@ def preprocess_video_for_analysis(
     except Exception as e:
         logger.error(f"Video preprocessing error: {str(e)}")
         return video_path, f"Preprocessing error: {str(e)}"
+    
+    
+    
+def save_upload_file(upload_file: UploadFile, destination: Path) -> str:
+    """
+    Save an uploaded file to the specified destination.
+    
+    Args:
+        upload_file: FastAPI UploadFile object
+        destination: Path where the file should be saved
+    
+    Returns:
+        str: Path where the file was saved
+    
+    Raises:
+        FileValidationError: If the file cannot be saved
+    """
+    try:
+        # Ensure destination directory exists
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Generate a unique filename to avoid collisions
+        file_extension = Path(upload_file.filename).suffix
+        unique_filename = f"{uuid.uuid4().hex}{file_extension}"
+        file_path = destination / unique_filename
+        
+        # Save the file
+        with open(file_path, "wb") as buffer:
+            content = upload_file.file.read()
+            buffer.write(content)
+        
+        logger.info(f"Uploaded file saved: {upload_file.filename} -> {file_path}")
+        
+        return str(file_path)
+        
+    except Exception as e:
+        logger.error(f"Error saving uploaded file {upload_file.filename}: {str(e)}")
+        raise FileValidationError(f"Could not save file: {str(e)}")

@@ -1,3 +1,4 @@
+# app/jobs/manager.py
 """
 Job queue manager for processing jobs in background
 """

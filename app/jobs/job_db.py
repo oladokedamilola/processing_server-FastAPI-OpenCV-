@@ -1,3 +1,4 @@
+# app/jobs/job_db.py
 """
 In-memory job database for free tier compatibility
 """
@@ -228,6 +229,14 @@ class JobDatabase:
                 """)
                 counts = cursor.fetchone()
                 
+                # Convert None values to 0
+                total_jobs = counts['total'] or 0 if counts else 0
+                pending_jobs = counts['pending'] or 0 if counts and counts['pending'] is not None else 0
+                processing_jobs = counts['processing'] or 0 if counts and counts['processing'] is not None else 0
+                completed_jobs = counts['completed'] or 0 if counts and counts['completed'] is not None else 0
+                failed_jobs = counts['failed'] or 0 if counts and counts['failed'] is not None else 0
+                cancelled_jobs = counts['cancelled'] or 0 if counts and counts['cancelled'] is not None else 0
+                
                 # Average processing time for completed jobs
                 cursor = conn.execute("""
                     SELECT AVG(processing_time) as avg_time 
@@ -235,6 +244,7 @@ class JobDatabase:
                     WHERE status = 'completed' AND processing_time IS NOT NULL
                 """)
                 avg_time = cursor.fetchone()
+                avg_processing_time = avg_time['avg_time'] if avg_time and avg_time['avg_time'] is not None else None
                 
                 # Success rate
                 cursor = conn.execute("""
@@ -246,19 +256,19 @@ class JobDatabase:
                 """)
                 success_data = cursor.fetchone()
                 
-                total_completed = success_data['total_completed'] if success_data and success_data['total_completed'] else 0
-                successful = success_data['successful'] if success_data and success_data['successful'] else 0
+                total_completed = success_data['total_completed'] if success_data and success_data['total_completed'] is not None else 0
+                successful = success_data['successful'] if success_data and success_data['successful'] is not None else 0
                 
                 success_rate = (successful / total_completed * 100) if total_completed > 0 else None
                 
                 return JobStats(
-                    total_jobs=counts['total'] if counts else 0,
-                    pending_jobs=counts['pending'] if counts else 0,
-                    processing_jobs=counts['processing'] if counts else 0,
-                    completed_jobs=counts['completed'] if counts else 0,
-                    failed_jobs=counts['failed'] if counts else 0,
-                    cancelled_jobs=counts['cancelled'] if counts else 0,
-                    average_processing_time=avg_time['avg_time'] if avg_time and avg_time['avg_time'] else None,
+                    total_jobs=total_jobs,
+                    pending_jobs=pending_jobs,
+                    processing_jobs=processing_jobs,
+                    completed_jobs=completed_jobs,
+                    failed_jobs=failed_jobs,
+                    cancelled_jobs=cancelled_jobs,
+                    average_processing_time=avg_processing_time,
                     success_rate=success_rate
                 )
                 

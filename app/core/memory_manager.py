@@ -5,7 +5,7 @@ import psutil
 import gc
 import threading
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple  # Added Tuple here
 from dataclasses import dataclass
 from datetime import datetime
 

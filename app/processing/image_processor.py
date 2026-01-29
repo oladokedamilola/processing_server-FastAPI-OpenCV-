@@ -1,3 +1,4 @@
+# app/processing/image_processor.py
 """
 Image processing pipeline for detection tasks
 """

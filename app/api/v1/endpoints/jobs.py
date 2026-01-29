@@ -1,7 +1,7 @@
 """
 Job management endpoints
 """
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, Form, File, UploadFile
 from typing import List, Optional
 from datetime import datetime, timedelta
 
@@ -57,86 +57,6 @@ def get_job_manager():
     return job_manager
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
-
-@router.post("/process/video", response_model=VideoProcessingResponse)
-async def process_video_background(
-    file: UploadFile,
-    background_tasks: BackgroundTasks,
-    confidence_threshold: Optional[float] = Form(None),
-    detection_types: Optional[str] = Form(None),
-    frame_sample_rate: Optional[int] = Form(None),
-    analyze_motion: Optional[bool] = Form(True),
-    return_summary_only: Optional[bool] = Form(False),
-    priority: Optional[int] = Form(1),
-    api_key: str = Depends(get_api_key)
-):
-    """
-    Process a video file in the background
-    
-    - **file**: Video file (MP4, AVI, MOV)
-    - **confidence_threshold**: Minimum confidence for detections
-    - **detection_types**: Comma-separated list of detection types
-    - **frame_sample_rate**: Process every Nth frame
-    - **analyze_motion**: Whether to analyze motion
-    - **return_summary_only**: Return only summary, not per-frame results
-    - **priority**: Job priority (0=low, 1=normal, 2=high, 3=urgent)
-    """
-    try:
-        # Get job manager
-        manager = get_job_manager()
-        
-        # Save uploaded file
-        video_path = await save_upload_file(file, subdirectory="videos/jobs")
-        
-        # Parse detection types
-        parsed_detection_types = None
-        if detection_types:
-            from ....models.detection import DetectionType
-            try:
-                types = detection_types.split(",")
-                parsed_detection_types = [DetectionType(t.strip().lower()) for t in types]
-            except ValueError:
-                parsed_detection_types = None
-        
-        # Prepare job parameters
-        job_params = {
-            "file_path": str(video_path),
-            "confidence_threshold": confidence_threshold,
-            "detection_types": parsed_detection_types,
-            "frame_sample_rate": frame_sample_rate,
-            "analyze_motion": analyze_motion,
-            "return_summary_only": return_summary_only,
-        }
-        
-        # Convert priority
-        job_priority = JobPriority(min(max(priority, 0), 3))
-        
-        # Submit job
-        job_id = manager.submit_job(
-            job_type=JobType.VIDEO_PROCESSING,
-            parameters=job_params,
-            priority=job_priority,
-            metadata={
-                "filename": file.filename,
-                "content_type": file.content_type,
-                "original_filename": file.filename,
-            }
-        )
-        
-        logger.info(f"Video processing job submitted: {job_id} (priority: {job_priority.value})")
-        
-        return VideoProcessingResponse(
-            success=True,
-            job_id=job_id,
-            status=JobStatus.PENDING,
-            message="Video processing job submitted successfully",
-            estimated_time=None,  # Could estimate based on file size
-            results_url=f"/api/v1/jobs/{job_id}/status"
-        )
-        
-    except Exception as e:
-        logger.error(f"Error submitting video job: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("", response_model=List[JobResponse])
 async def list_jobs(
@@ -292,7 +212,6 @@ async def check_video_compatibility(
     try:
         from ....processing.video_processor import VideoProcessor
         from ....core.processor import get_processor
-        from ....utils.file_handling import save_upload_file
         
         processor = get_processor()
         if processor is None:
@@ -302,7 +221,7 @@ async def check_video_compatibility(
             )
         
         # Save uploaded file temporarily
-        video_path = await save_upload_file(file, subdirectory="temp/compatibility")
+        video_path = save_upload_file(file, settings.TEMP_PATH / "compatibility")
         
         # Check compatibility
         video_processor = VideoProcessor(processor)
@@ -326,11 +245,11 @@ async def check_video_compatibility(
         logger.error(f"Error checking video compatibility: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Update the existing video processing endpoint to use enhanced processor
+# Updated video processing endpoint with enhanced format support
 @router.post("/process/video", response_model=VideoProcessingResponse)
 async def process_video_background(
-    file: UploadFile = File(..., description="Video file to process"),
     background_tasks: BackgroundTasks,
+    file: UploadFile = File(..., description="Video file to process"),
     confidence_threshold: Optional[float] = Form(None),
     detection_types: Optional[str] = Form(None),
     frame_sample_rate: Optional[int] = Form(None),
@@ -353,7 +272,7 @@ async def process_video_background(
         manager = get_job_manager()
         
         # Save uploaded file
-        video_path = await save_upload_file(file, subdirectory="videos/jobs")
+        video_path = save_upload_file(file, settings.TEMP_PATH / "videos/jobs")
         
         # Parse detection types
         parsed_detection_types = None

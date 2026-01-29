@@ -1,3 +1,4 @@
+# app/jobs/models.py
 """
 Job data models and schemas
 """
@@ -66,14 +67,22 @@ class JobResponse(BaseModel):
 
 class JobStats(BaseModel):
     """Schema for job statistics"""
-    total_jobs: int = 0
-    pending_jobs: int = 0
-    processing_jobs: int = 0
-    completed_jobs: int = 0
-    failed_jobs: int = 0
-    cancelled_jobs: int = 0
+    total_jobs: Optional[int] = 0
+    pending_jobs: Optional[int] = 0
+    processing_jobs: Optional[int] = 0
+    completed_jobs: Optional[int] = 0
+    failed_jobs: Optional[int] = 0
+    cancelled_jobs: Optional[int] = 0
     average_processing_time: Optional[float] = None
     success_rate: Optional[float] = Field(None, ge=0.0, le=100.0)
+    
+    # Add a computed property for active_jobs
+    @property
+    def active_jobs(self) -> int:
+        """Compute active jobs (pending + processing)"""
+        pending = self.pending_jobs or 0
+        processing = self.processing_jobs or 0
+        return pending + processing
 
 class JobFilter(BaseModel):
     """Schema for filtering jobs"""

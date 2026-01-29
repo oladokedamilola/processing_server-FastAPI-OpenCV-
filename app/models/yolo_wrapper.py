@@ -1,11 +1,95 @@
+# app/models/yolo_wrapper.py
 """
 YOLOv8 model wrapper for object detection
 """
+# ============================================================================
+# PATCH PYTORCH 2.6 FOR YOLO COMPATIBILITY - MUST BE FIRST!
+# ============================================================================
+import sys
 import os
+
+# Apply patch before ANY other imports
+try:
+    import torch
+    
+    # Monkey-patch torch.load globally
+    original_torch_load = torch.load
+    
+    def patched_torch_load(f, *args, **kwargs):
+        """Patch torch.load to use weights_only=False for YOLO models"""
+        # Check if it's likely a YOLO model file
+        if isinstance(f, (str, os.PathLike)) and str(f).endswith('.pt'):
+            kwargs['weights_only'] = False
+        elif 'weights_only' not in kwargs:
+            # Default to False for safety with YOLO
+            kwargs['weights_only'] = False
+        return original_torch_load(f, *args, **kwargs)
+    
+    torch.load = patched_torch_load
+    print("Applied global torch.load patch for PyTorch 2.6 YOLO compatibility")
+    
+    # Also try to add safe globals
+    try:
+        # Add common torch modules
+        torch.serialization.add_safe_globals([
+            torch.nn.modules.container.Sequential,
+            torch.nn.modules.conv.Conv2d,
+            torch.nn.modules.batchnorm.BatchNorm2d,
+            torch.nn.modules.activation.SiLU,
+            torch.nn.modules.activation.ReLU,
+            torch.nn.modules.pooling.MaxPool2d,
+            torch.nn.modules.linear.Linear,
+            torch.nn.modules.dropout.Dropout,
+        ])
+        
+        # Try to add Ultralytics modules
+        try:
+            from ultralytics.nn.modules import Conv, Bottleneck, C2f, SPPF, Concat, Detect
+            from ultralytics.nn.tasks import DetectionModel
+            
+            torch.serialization.add_safe_globals([
+                Conv, Bottleneck, C2f, SPPF, Concat, Detect, DetectionModel
+            ])
+            print("Added Ultralytics modules to safe globals")
+        except ImportError:
+            # Try dynamic import
+            try:
+                import importlib
+                modules_to_try = ['Conv', 'Bottleneck', 'C2f', 'SPPF', 'Concat', 'Detect']
+                for module_name in modules_to_try:
+                    try:
+                        ultralytics_modules = importlib.import_module('ultralytics.nn.modules')
+                        module_class = getattr(ultralytics_modules, module_name, None)
+                        if module_class:
+                            torch.serialization.add_safe_globals([module_class])
+                    except:
+                        pass
+                
+                # Try to add DetectionModel
+                try:
+                    ultralytics_tasks = importlib.import_module('ultralytics.nn.tasks')
+                    detection_model = getattr(ultralytics_tasks, 'DetectionModel', None)
+                    if detection_model:
+                        torch.serialization.add_safe_globals([detection_model])
+                except:
+                    pass
+            except:
+                pass
+        
+    except Exception as safe_globals_error:
+        print(f"Safe globals setup failed (non-critical): {safe_globals_error}")
+        
+except Exception as patch_error:
+    print(f"CRITICAL: Failed to apply PyTorch patch: {patch_error}")
+    print("YOLO model loading will likely fail with PyTorch 2.6")
+    sys.exit(1)
+
+# ============================================================================
+# NOW IMPORT OTHER MODULES
+# ============================================================================
 from typing import List, Optional, Dict, Any
 import numpy as np
 from ultralytics import YOLO
-import torch
 import cv2
 
 from ..core.config import settings
@@ -42,26 +126,57 @@ class YOLODetector(DetectionModel):
         try:
             logger.info(f"Loading YOLO model: {self.model_name}")
             
-            # Check if model already exists locally
-            if self.model_path.exists():
-                logger.info(f"Loading YOLO model from local file: {self.model_path}")
-                self.model = YOLO(str(self.model_path))
-                self.offline_mode = False
-            else:
-                logger.info(f"Model not found locally, attempting download: {self.model_name}")
-                try:
-                    # Try to download the model
-                    self.model = YOLO(self.model_name)
-                    # Save for future use
-                    self.model.save(self.model_path)
+            # Create safe globals context with all known classes
+            safe_classes = []
+            
+            # Try to collect all known Ultralytics modules
+            try:
+                # Import common ultralytics modules
+                from ultralytics.nn.modules import Conv, Bottleneck, C2f, SPPF, Concat, Detect
+                safe_classes.extend([Conv, Bottleneck, C2f, SPPF, Concat, Detect])
+            except ImportError as e:
+                logger.warning(f"Could not import some Ultralytics modules: {e}")
+            
+            try:
+                from ultralytics.nn.tasks import DetectionModel
+                safe_classes.append(DetectionModel)
+            except ImportError:
+                pass
+            
+            # Add torch modules
+            safe_classes.extend([
+                torch.nn.modules.container.Sequential,
+                torch.nn.modules.conv.Conv2d,
+                torch.nn.modules.batchnorm.BatchNorm2d,
+                torch.nn.modules.activation.SiLU,
+                torch.nn.modules.activation.ReLU,
+                torch.nn.modules.pooling.MaxPool2d,
+                torch.nn.modules.linear.Linear,
+                torch.nn.modules.dropout.Dropout,
+            ])
+            
+            # Load with safe globals
+            with torch.serialization.safe_globals(safe_classes):
+                # Check if model already exists locally
+                if self.model_path.exists():
+                    logger.info(f"Loading YOLO model from local file: {self.model_path}")
+                    self.model = YOLO(str(self.model_path))
                     self.offline_mode = False
-                    logger.info(f"YOLO model downloaded and saved: {self.model_path}")
-                except Exception as download_error:
-                    logger.warning(f"Online download failed: {download_error}")
-                    logger.info("Falling back to offline mode - YOLO will be unavailable")
-                    self.offline_mode = True
-                    self.loaded = False
-                    return
+                else:
+                    logger.info(f"Model not found locally, attempting download: {self.model_name}")
+                    try:
+                        # Try to download the model
+                        self.model = YOLO(self.model_name)
+                        # Save for future use
+                        self.model.save(self.model_path)
+                        self.offline_mode = False
+                        logger.info(f"YOLO model downloaded and saved: {self.model_path}")
+                    except Exception as download_error:
+                        logger.warning(f"Online download failed: {download_error}")
+                        logger.info("Falling back to offline mode - YOLO will be unavailable")
+                        self.offline_mode = True
+                        self.loaded = False
+                        return
             
             # Move to CPU (since we're on free tier without GPU)
             if torch.cuda.is_available():

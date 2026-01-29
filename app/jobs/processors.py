@@ -1,3 +1,4 @@
+# app/jobs/processors.py
 """
 Job processor functions for different job types
 """
@@ -51,47 +52,46 @@ class JobProcessors:
             logger.error(f"Image processing job failed: {str(e)}")
             raise
     
-    # Update the video processor method
-def get_video_processor(self, parameters: Dict[str, Any], progress_callback: Callable) -> Dict[str, Any]:
-    """Process a video processing job with enhanced format handling"""
-    try:
-        # Extract parameters
-        file_path = Path(parameters["file_path"])
-        detection_types = parameters.get("detection_types")
-        confidence_threshold = parameters.get("confidence_threshold")
-        frame_sample_rate = parameters.get("frame_sample_rate", settings.VIDEO_FRAME_SAMPLE_RATE)
-        analyze_motion = parameters.get("analyze_motion", True)
-        return_summary_only = parameters.get("return_summary_only", False)
-        enable_advanced_features = parameters.get("enable_advanced_features", True)
-        force_conversion = parameters.get("force_conversion", False)
-        
-        # Update progress
-        progress_callback(5, {"stage": "validating_video"})
-        
-        # Process video with enhanced format handling
-        result = self.video_processor.process_video_with_format_handling(
-            video_path=file_path,
-            progress_callback=lambda prog, extra: progress_callback(
-                5 + (prog * 0.9),  # 5-95% for video processing
-                {"stage": "processing_video", **extra}
-            ),
-            confidence_threshold=confidence_threshold,
-            detection_types=detection_types,
-            frame_sample_rate=frame_sample_rate,
-            analyze_motion=analyze_motion,
-            return_summary_only=return_summary_only,
-            enable_advanced_features=enable_advanced_features,
-            force_conversion=force_conversion
-        )
-        
-        # Update progress
-        progress_callback(100, {"stage": "completed"})
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Video processing job failed: {str(e)}")
-        raise
+    def get_video_processor(self, parameters: Dict[str, Any], progress_callback: Callable) -> Dict[str, Any]:
+        """Process a video processing job with enhanced format handling"""
+        try:
+            # Extract parameters
+            file_path = Path(parameters["file_path"])
+            detection_types = parameters.get("detection_types")
+            confidence_threshold = parameters.get("confidence_threshold")
+            frame_sample_rate = parameters.get("frame_sample_rate", settings.VIDEO_FRAME_SAMPLE_RATE)
+            analyze_motion = parameters.get("analyze_motion", True)
+            return_summary_only = parameters.get("return_summary_only", False)
+            enable_advanced_features = parameters.get("enable_advanced_features", True)
+            force_conversion = parameters.get("force_conversion", False)
+            
+            # Update progress
+            progress_callback(5, {"stage": "validating_video"})
+            
+            # Process video with enhanced format handling
+            result = self.video_processor.process_video_with_format_handling(
+                video_path=file_path,
+                progress_callback=lambda prog, extra: progress_callback(
+                    5 + (prog * 0.9),  # 5-95% for video processing
+                    {"stage": "processing_video", **extra}
+                ),
+                confidence_threshold=confidence_threshold,
+                detection_types=detection_types,
+                frame_sample_rate=frame_sample_rate,
+                analyze_motion=analyze_motion,
+                return_summary_only=return_summary_only,
+                enable_advanced_features=enable_advanced_features,
+                force_conversion=force_conversion
+            )
+            
+            # Update progress
+            progress_callback(100, {"stage": "completed"})
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Video processing job failed: {str(e)}")
+            raise
     
     def get_batch_processor(self, parameters: Dict[str, Any], progress_callback: Callable) -> Dict[str, Any]:
         """Process a batch of images/videos"""

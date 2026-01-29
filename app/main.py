@@ -1,6 +1,9 @@
 """
 FastAPI Processing Server - Main Application
 """
+# APPLY PYTORCH PATCH FIRST - BEFORE ANY OTHER IMPORTS!
+import app.core.pytorch_patch  # Ensure PyTorch patch is applied BEFORE anything else
+
 from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -284,8 +287,19 @@ async def root():
     
     job_status = "not_initialized"
     if job_manager:
-        stats = job_manager.get_job_stats()
-        job_status = f"{stats.active_jobs} active, {stats.completed_jobs} completed"
+        try:
+            stats = job_manager.get_job_stats()
+            # Handle None stats or None values
+            if stats:
+                # Use processing_jobs for active jobs
+                processing_jobs = stats.processing_jobs if stats.processing_jobs is not None else 0
+                completed_jobs = stats.completed_jobs if stats.completed_jobs is not None else 0
+                job_status = f"{processing_jobs} active, {completed_jobs} completed"
+            else:
+                job_status = "no stats available"
+        except Exception as e:
+            logger.error(f"Failed to get job stats: {str(e)}")
+            job_status = "error"
     
     processing_stats = "not_available"
     if processor:
