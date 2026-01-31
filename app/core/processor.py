@@ -1,3 +1,4 @@
+# app/core/processor.py
 """
 Global processor instance to avoid circular imports
 """

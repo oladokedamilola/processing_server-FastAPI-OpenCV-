@@ -1,3 +1,4 @@
+# app/core/config.py
 """
 Configuration settings for the application - Simplified version
 """

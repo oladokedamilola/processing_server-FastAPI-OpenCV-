@@ -314,6 +314,53 @@ class ImageProcessor:
                 "detection_count": 0,
                 "error": str(e)
             }
+            
+    def process_image_from_bytes(
+        self,
+        image_bytes: bytes,
+        filename: str = None,
+        detection_types: List[DetectionType] = None,
+        confidence_threshold: float = None,
+        return_image: bool = False,
+        image_format: str = "jpeg",
+        enable_advanced_features: bool = True
+    ) -> Dict[str, Any]:
+        """Process image from bytes instead of file path"""
+        import tempfile
+        import os
+        from pathlib import Path
+        
+        # Create temporary file
+        suffix = Path(filename).suffix if filename else '.jpg'
+        temp_filepath = None
+        
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(image_bytes)
+                temp_filepath = tmp.name
+            
+            # Convert to Path object
+            image_path_obj = Path(temp_filepath)
+            
+            # Process using existing method
+            result = self.process_image(
+                image_path=image_path_obj,
+                detection_types=detection_types,
+                confidence_threshold=confidence_threshold,
+                return_image=return_image,
+                image_format=image_format,
+                enable_advanced_features=enable_advanced_features
+            )
+            
+            return result
+            
+        finally:
+            # Clean up temp file
+            if temp_filepath and os.path.exists(temp_filepath):
+                try:
+                    os.unlink(temp_filepath)
+                except:
+                    pass
     
     def _detect_with_yolo(
         self,

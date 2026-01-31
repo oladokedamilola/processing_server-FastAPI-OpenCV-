@@ -1,3 +1,4 @@
+# processing_server/app/api/v1/endpoints/process.py
 """
 Image processing endpoints
 """
@@ -22,6 +23,32 @@ from ....utils.logger import logger
 
 router = APIRouter(prefix="/process", tags=["processing"])
 
+def process_image_from_bytes(self, image_bytes: bytes, filename: str = None, **kwargs):
+    """
+    Process image from bytes instead of file path.
+    """
+    import tempfile
+    from pathlib import Path
+    
+    # Create temporary file
+    with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix if filename else '.jpg', delete=False) as tmp:
+        # Write bytes to temp file
+        tmp.write(image_bytes)
+        tmp_path = tmp.name
+    
+    try:
+        # Process using existing method
+        result = self.process_image(image_path=tmp_path, **kwargs)
+        return result
+    finally:
+        # Clean up temp file
+        import os
+        try:
+            os.unlink(tmp_path)
+        except:
+            pass
+
+
 @router.post("/image", response_model=ImageProcessingResponse)
 async def process_image(
     file: UploadFile = File(..., description="Image file to process"),
@@ -40,6 +67,11 @@ async def process_image(
     - **return_image**: Whether to return processed image with detections drawn
     - **image_format**: Format for returned image (jpeg, png)
     """
+    import tempfile
+    import os
+    import uuid
+    from pathlib import Path
+    
     try:
         # Get processor instance
         processor = get_processor()
@@ -61,34 +93,56 @@ async def process_image(
                     details={"valid_types": [dt.value for dt in DetectionType]}
                 )
         
-        # Save uploaded file
-        image_path = await save_upload_file(file)
+        # Read file into memory
+        file_content = await file.read()
         
-        # Process image
-        result = processor.process_image(
-            image_path=image_path,
-            detection_types=parsed_detection_types,
-            confidence_threshold=confidence_threshold,
-            return_image=return_image,
-            image_format=image_format
-        )
+        # Create temporary file path
+        temp_filepath = None
         
-        # Add job ID (for consistency with video processing)
-        result["job_id"] = f"img_{image_path.stem}"
-        
-        logger.processing_log(
-            job_id=result["job_id"],
-            job_type="image",
-            status="completed",
-            details={
-                "detection_count": result["detection_count"],
-                "processing_time": result["processing_time"],
-                "file_size": image_path.stat().st_size,
-            }
-        )
-        
-        return ImageProcessingResponse(**result)
-        
+        try:
+            # Create temp file
+            suffix = Path(file.filename).suffix if file.filename else '.jpg'
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(file_content)
+                temp_filepath = tmp.name
+            
+            # Convert to Path object - THIS IS THE FIX!
+            image_path_obj = Path(temp_filepath)
+            
+            # Process image using existing method
+            result = processor.process_image_from_bytes(
+                image_bytes=file_content,
+                filename=file.filename,
+                detection_types=parsed_detection_types,
+                confidence_threshold=confidence_threshold,
+                return_image=return_image,
+                image_format=image_format
+            )
+            
+            # Add job ID
+            result["job_id"] = f"img_{uuid.uuid4().hex[:8]}"
+            
+            logger.processing_log(
+                job_id=result["job_id"],
+                job_type="image",
+                status="completed",
+                details={
+                    "detection_count": result["detection_count"],
+                    "processing_time": result["processing_time"],
+                    "file_size": len(file_content),
+                }
+            )
+            
+            return ImageProcessingResponse(**result)
+            
+        finally:
+            # Clean up temp file
+            if temp_filepath and os.path.exists(temp_filepath):
+                try:
+                    os.unlink(temp_filepath)
+                except:
+                    pass
+                
     except ProcessingException as e:
         logger.error(f"Processing error: {e.message}", extra=e.details)
         raise HTTPException(status_code=400, detail=str(e))

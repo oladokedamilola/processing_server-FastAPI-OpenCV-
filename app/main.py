@@ -3,7 +3,8 @@ FastAPI Processing Server - Main Application
 """
 # APPLY PYTORCH PATCH FIRST - BEFORE ANY OTHER IMPORTS!
 import app.core.pytorch_patch  # Ensure PyTorch patch is applied BEFORE anything else
-
+from fastapi import FastAPI, Request, status, HTTPException, File, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -217,14 +218,17 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         "errors": errors,
     })
     
+    # Create a JSON-serializable response
+    response_content = {
+        "error": True,
+        "message": "Validation error",
+        "error_code": "VALIDATION_ERROR",
+        "details": {"errors": errors},
+    }
+    
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content=ErrorResponse(
-            error=True,
-            message="Validation error",
-            error_code="VALIDATION_ERROR",
-            details={"errors": errors},
-        ).dict(),
+        content=response_content,
     )
 
 @app.exception_handler(HTTPException)
@@ -235,20 +239,16 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         "path": request.url.path,
     })
     
-    # If detail is already our ErrorResponse format, return as-is
-    if isinstance(exc.detail, dict) and "error_code" in exc.detail:
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=exc.detail,
-        )
+    # Create a JSON-serializable response
+    response_content = {
+        "error": True,
+        "message": str(exc.detail),
+        "error_code": f"HTTP_{exc.status_code}",
+    }
     
     return JSONResponse(
         status_code=exc.status_code,
-        content=ErrorResponse(
-            error=True,
-            message=str(exc.detail),
-            error_code=f"HTTP_{exc.status_code}",
-        ).dict(),
+        content=response_content,
     )
 
 @app.exception_handler(Exception)
@@ -260,19 +260,25 @@ async def general_exception_handler(request: Request, exc: Exception):
         "traceback": traceback.format_exc(),
     })
     
+    # Create a JSON-serializable response
+    response_content = {
+        "error": True,
+        "message": "Internal server error",
+        "error_code": "INTERNAL_SERVER_ERROR",
+    }
+    
+    # Add debug info only if enabled
+    if settings.DEBUG:
+        response_content["details"] = {
+            "exception_type": exc.__class__.__name__,
+            "exception_message": str(exc),
+        }
+    
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content=ErrorResponse(
-            error=True,
-            message="Internal server error",
-            error_code="INTERNAL_SERVER_ERROR",
-            details={
-                "exception_type": exc.__class__.__name__,
-                "exception_message": str(exc),
-            } if settings.DEBUG else {},
-        ).dict(),
+        content=response_content,
     )
-
+    
 # Health check endpoint
 @app.get("/", tags=["health"])
 async def root():
@@ -344,3 +350,26 @@ async def health_check():
         "processor_status": processor_status,
         "job_manager_status": job_manager_status,
     }
+    
+
+@app.post("/api/v1/test/image")
+async def test_process_image(image: UploadFile = File(...)):
+    """Test endpoint to debug image processing"""
+    try:
+        # Read the image
+        contents = await image.read()
+        
+        # Log some info
+        logger.info(f"Test endpoint: Received image {image.filename}, size: {len(contents)} bytes")
+        
+        # Return a simple response
+        return {
+            "success": True,
+            "filename": image.filename,
+            "size_bytes": len(contents),
+            "content_type": image.content_type,
+            "message": "Test endpoint working"
+        }
+    except Exception as e:
+        logger.error(f"Test endpoint error: {str(e)}")
+        raise
