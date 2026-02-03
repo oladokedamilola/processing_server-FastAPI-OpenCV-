@@ -1,3 +1,4 @@
+# app/api/v1/endpoints/jobs.py
 """
 Job management endpoints
 """
@@ -325,4 +326,46 @@ async def process_video_background(
         
     except Exception as e:
         logger.error(f"Error submitting video job: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    
+@router.get("/{job_id}/results")
+async def get_job_results(job_id: str, api_key: str = Depends(get_api_key)):
+    """Get completed job results"""
+    try:
+        manager = get_job_manager()
+        job = manager.get_job_status(job_id)
+        
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+        
+        # Check if job is completed
+        if job.status != JobStatus.COMPLETED:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Job not completed. Current status: {job.status.value}"
+            )
+        
+        # Check if results exist
+        if not job.result:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No results available for job: {job_id}"
+            )
+        
+        return {
+            "success": True,
+            "job_id": job_id,
+            "status": job.status.value,
+            "results": job.result,
+            "created_at": job.created_at,
+            "started_at": job.started_at,
+            "completed_at": job.completed_at,
+            "processing_time": (job.completed_at - job.started_at).total_seconds() if job.started_at and job.completed_at else None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting job results {job_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

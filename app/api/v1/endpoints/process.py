@@ -1,52 +1,24 @@
-# processing_server/app/api/v1/endpoints/process.py
+# app/api/v1/endpoints/process.py
 """
-Image processing endpoints
+Image processing endpoints - NO DATABASE VERSION
 """
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
-from fastapi.responses import JSONResponse
 from typing import List, Optional
-from pathlib import Path
 
 from ....core.config import settings
 from ....core.security import get_api_key
 from ....core.exceptions import ProcessingException
 from ....core.processor import get_processor
 from ....models.schemas import (
-    ImageProcessingRequest, 
     ImageProcessingResponse,
     DetectionType,
-    ProcessingResponse,
-    ErrorResponse
 )
-from ....utils.file_handling import save_upload_file
 from ....utils.logger import logger
+
+import uuid
 
 router = APIRouter(prefix="/process", tags=["processing"])
 
-def process_image_from_bytes(self, image_bytes: bytes, filename: str = None, **kwargs):
-    """
-    Process image from bytes instead of file path.
-    """
-    import tempfile
-    from pathlib import Path
-    
-    # Create temporary file
-    with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix if filename else '.jpg', delete=False) as tmp:
-        # Write bytes to temp file
-        tmp.write(image_bytes)
-        tmp_path = tmp.name
-    
-    try:
-        # Process using existing method
-        result = self.process_image(image_path=tmp_path, **kwargs)
-        return result
-    finally:
-        # Clean up temp file
-        import os
-        try:
-            os.unlink(tmp_path)
-        except:
-            pass
 
 
 @router.post("/image", response_model=ImageProcessingResponse)
@@ -56,6 +28,9 @@ async def process_image(
     detection_types: Optional[str] = Form(None),
     return_image: Optional[bool] = Form(False),
     image_format: Optional[str] = Form("jpeg"),
+    return_base64: Optional[bool] = Form(True),  # Return base64 by default
+    django_media_id: Optional[int] = Form(None),  # For Django reference only
+    django_user_id: Optional[int] = Form(None),   # For Django reference only
     api_key: str = Depends(get_api_key)
 ):
     """
@@ -64,14 +39,12 @@ async def process_image(
     - **file**: Image file (JPEG, PNG)
     - **confidence_threshold**: Minimum confidence for detections (0.0 to 1.0)
     - **detection_types**: Comma-separated list of detection types (person, vehicle, face, etc.)
-    - **return_image**: Whether to return processed image with detections drawn
+    - **return_image**: Whether to return processed image with detections drawn (legacy)
     - **image_format**: Format for returned image (jpeg, png)
+    - **return_base64**: Whether to return base64 encoded processed image (default: True)
+    - **django_media_id**: Optional ID of the MediaUpload in Django (passed through)
+    - **django_user_id**: Optional ID of the User in Django (passed through)
     """
-    import tempfile
-    import os
-    import uuid
-    from pathlib import Path
-    
     try:
         # Get processor instance
         processor = get_processor()
@@ -96,53 +69,44 @@ async def process_image(
         # Read file into memory
         file_content = await file.read()
         
-        # Create temporary file path
-        temp_filepath = None
+        # Process image directly from bytes with return_base64 parameter
+        result = processor.process_image_from_bytes(
+            image_bytes=file_content,
+            filename=file.filename or "uploaded_image.jpg",
+            detection_types=parsed_detection_types,
+            confidence_threshold=confidence_threshold,
+            return_image=return_image,
+            image_format=image_format,
+            enable_advanced_features=True,
+            return_base64=return_base64  # Pass the parameter
+        )
         
-        try:
-            # Create temp file
-            suffix = Path(file.filename).suffix if file.filename else '.jpg'
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(file_content)
-                temp_filepath = tmp.name
+        # Generate job ID for tracking
+        job_id = f"img_{uuid.uuid4().hex[:8]}"
+        result["job_id"] = job_id
+        
+        # Add Django references if provided
+        if django_media_id:
+            result["django_media_id"] = django_media_id
+        if django_user_id:
+            result["django_user_id"] = django_user_id
+        
+        # Log processing
+        logger.info(
+            f"Image processing completed: {result['detection_count']} detections "
+            f"in {result['processing_time']}s for Django media ID: {django_media_id or 'N/A'}"
+        )
+        
+        # Log if base64 image was returned
+        if 'processed_image_base64' in result:
+            logger.info(f"Base64 processed image returned: {len(result['processed_image_base64'])} chars")
+        elif 'processed_image_url' in result:
+            logger.info(f"Processed image URL included: {result['processed_image_url']}")
+        else:
+            logger.warning("No processed image returned")
             
-            # Convert to Path object - THIS IS THE FIX!
-            image_path_obj = Path(temp_filepath)
+        return ImageProcessingResponse(**result)
             
-            # Process image using existing method
-            result = processor.process_image_from_bytes(
-                image_bytes=file_content,
-                filename=file.filename,
-                detection_types=parsed_detection_types,
-                confidence_threshold=confidence_threshold,
-                return_image=return_image,
-                image_format=image_format
-            )
-            
-            # Add job ID
-            result["job_id"] = f"img_{uuid.uuid4().hex[:8]}"
-            
-            logger.processing_log(
-                job_id=result["job_id"],
-                job_type="image",
-                status="completed",
-                details={
-                    "detection_count": result["detection_count"],
-                    "processing_time": result["processing_time"],
-                    "file_size": len(file_content),
-                }
-            )
-            
-            return ImageProcessingResponse(**result)
-            
-        finally:
-            # Clean up temp file
-            if temp_filepath and os.path.exists(temp_filepath):
-                try:
-                    os.unlink(temp_filepath)
-                except:
-                    pass
-                
     except ProcessingException as e:
         logger.error(f"Processing error: {e.message}", extra=e.details)
         raise HTTPException(status_code=400, detail=str(e))
@@ -154,6 +118,8 @@ async def process_image(
             detail=f"Internal server error: {str(e)}"
         )
 
+
+# Remove all database-related endpoints since Django handles that
 @router.get("/models")
 async def list_models(api_key: str = Depends(get_api_key)):
     """List available detection models"""
@@ -215,29 +181,6 @@ async def load_model(model_name: str, api_key: str = Depends(get_api_key)):
             detail=f"Error loading model: {str(e)}"
         )
 
-@router.post("/models/{model_name}/unload")
-async def unload_model(model_name: str, api_key: str = Depends(get_api_key)):
-    """Unload a specific detection model"""
-    try:
-        processor = get_processor()
-        if processor is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Image processor not initialized"
-            )
-        
-        processor.unload_model(model_name)
-        
-        return {
-            "success": True,
-            "message": f"Model {model_name} unloaded successfully",
-            "model": model_name,
-            "loaded": False,
-        }
-        
-    except Exception as e:
-        logger.error(f"Error unloading model {model_name}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error unloading model: {str(e)}"
-        )
+
+# Remove video endpoint from this file - move it to separate video processing file
+# Video processing should be handled separately with job queuing

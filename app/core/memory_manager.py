@@ -1,11 +1,13 @@
+# app/core/memory_manager.py
 """
 Memory management and optimization for resource constraints
 """
+import os
 import psutil
 import gc
 import threading
 import time
-from typing import Dict, Any, Optional, Tuple  # Added Tuple here
+from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -26,7 +28,11 @@ class MemoryStats:
 class MemoryManager:
     """Manage memory usage and prevent out-of-memory conditions"""
     
-    def __init__(self, memory_limit_mb: int = 400):  # Leave 100MB buffer on 512MB free tier
+    def __init__(self, memory_limit_mb: int = None):
+        if memory_limit_mb is None:
+            # Get from environment or use default
+            memory_limit_mb = int(os.getenv("MAX_PROCESS_MEMORY_MB", "500"))
+        
         self.memory_limit_bytes = memory_limit_mb * 1024 * 1024
         self.memory_warning_threshold = 0.8  # 80% usage warning
         self.memory_critical_threshold = 0.9  # 90% usage critical

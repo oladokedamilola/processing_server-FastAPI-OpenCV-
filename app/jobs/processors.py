@@ -63,13 +63,12 @@ class JobProcessors:
             analyze_motion = parameters.get("analyze_motion", True)
             return_summary_only = parameters.get("return_summary_only", False)
             enable_advanced_features = parameters.get("enable_advanced_features", True)
-            force_conversion = parameters.get("force_conversion", False)
             
             # Update progress
             progress_callback(5, {"stage": "validating_video"})
             
             # Process video with enhanced format handling
-            result = self.video_processor.process_video_with_format_handling(
+            result = self.video_processor.process_video(
                 video_path=file_path,
                 progress_callback=lambda prog, extra: progress_callback(
                     5 + (prog * 0.9),  # 5-95% for video processing
@@ -80,8 +79,7 @@ class JobProcessors:
                 frame_sample_rate=frame_sample_rate,
                 analyze_motion=analyze_motion,
                 return_summary_only=return_summary_only,
-                enable_advanced_features=enable_advanced_features,
-                force_conversion=force_conversion
+                enable_advanced_features=enable_advanced_features
             )
             
             # Update progress

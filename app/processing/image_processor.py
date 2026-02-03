@@ -1,12 +1,15 @@
-# app/processing/image_processor.py
+# app/processing/image_processor.py (updated with base64 support)
 """
 Image processing pipeline for detection tasks
 """
+from ..utils.file_handling import save_and_get_processed_image
 import cv2
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 import time
+import base64
+from io import BytesIO
 
 from ..core.config import settings
 from ..core.exceptions import ProcessingException
@@ -18,7 +21,7 @@ from ..models.advanced_detection import CrowdDetector, VehicleCounter
 from ..processing.motion_detector import MotionDetector
 
 class ImageProcessor:
-    """Main image processing class"""
+    """Main image processing class with base64 support"""
     
     def __init__(self):
         self.model_manager = ModelManager()
@@ -103,9 +106,12 @@ class ImageProcessor:
         confidence_threshold: float = None,
         return_image: bool = False,
         image_format: str = "jpeg",
-        enable_advanced_features: bool = True
-    ) -> Dict[str, Any]:
-        """Process a single image with multiple detection methods"""
+        enable_advanced_features: bool = True,
+        return_base64: bool = True  # NEW: parameter to return base64
+        ) -> Dict[str, Any]:
+        """
+        Process a single image with multiple detection methods
+        """
         start_time = time.time()
         
         try:
@@ -196,10 +202,36 @@ class ImageProcessor:
                 motion_detections = self.motion_detector.detect(image, method="frame_differencing")
                 all_detections.extend(motion_detections)
             
-            # Process image with detections drawn (if requested)
+            # Process image with detections drawn
+            processed_image = self._draw_detections(image, all_detections)
+            
+            # NEW: Generate base64 encoded image if requested
+            processed_image_base64 = None
+            if return_base64:
+                processed_image_base64 = self._image_to_base64(processed_image, image_format)
+            
+            # Save processed image to disk (optional, for debugging)
+            processed_image_url = None
+            if settings.SAVE_PROCESSED_IMAGES:
+                try:
+                    processed_image_url, save_error = save_and_get_processed_image(
+                        original_image=processed_image,  # Use the drawn image
+                        detections=[self._detection_to_dict(d) for d in all_detections],
+                        original_filename=image_path.name
+                    )
+                    
+                    if processed_image_url:
+                        logger.info(f"Processed image saved and URL generated: {processed_image_url}")
+                    elif save_error:
+                        logger.warning(f"Could not save processed image: {save_error}")
+                        
+                except Exception as e:
+                    logger.error(f"Error saving processed image to disk: {str(e)}")
+                    # Continue without processed image URL
+            
+            # Also save processed image locally if requested (for backward compatibility)
             processed_image_path = None
             if return_image:
-                processed_image = self._draw_detections(image, all_detections)
                 processed_image_path = self._save_processed_image(
                     processed_image, image_path, image_format
                 )
@@ -224,8 +256,21 @@ class ImageProcessor:
                 "statistics": self._get_processing_statistics()
             }
             
+            # NEW: Add base64 encoded image if generated
+            if processed_image_base64:
+                response["processed_image_base64"] = processed_image_base64
+                response["image_format"] = image_format
+            
+            # Add processed image URL if available
+            if processed_image_url:
+                response["processed_image_url"] = processed_image_url
+                response["has_processed_image"] = True
+            else:
+                response["has_processed_image"] = False
+            
+            # Add local processed image path for backward compatibility
             if processed_image_path:
-                response["processed_image_url"] = f"/processed/{processed_image_path.name}"
+                response["local_processed_path"] = str(processed_image_path)
             
             logger.info(f"Image processed successfully: {len(all_detections)} detections in {processing_time:.3f}s")
             
@@ -235,86 +280,6 @@ class ImageProcessor:
             logger.error(f"Error processing image: {str(e)}")
             raise
     
-    def process_video_frame(
-        self,
-        frame: np.ndarray,
-        frame_number: int,
-        detection_types: List[DetectionType] = None,
-        confidence_threshold: float = None,
-        enable_advanced_features: bool = True
-    ) -> Dict[str, Any]:
-        """Process a single video frame with tracking and counting"""
-        try:
-            # Default detection types
-            if detection_types is None:
-                detection_types = [DetectionType.PERSON, DetectionType.VEHICLE, DetectionType.MOTION]
-            
-            # Run basic detections
-            all_detections = []
-            person_detections = []
-            vehicle_detections = []
-            
-            # Check if YOLO is available
-            yolo_model = self.model_manager.models.get("yolov8")
-            yolo_available = yolo_model and yolo_model.loaded and hasattr(yolo_model, 'is_available') and yolo_model.is_available()
-            
-            # Use YOLO for object detection if available
-            if yolo_available:
-                yolo_detections = self._detect_with_yolo(
-                    frame, 
-                    confidence_threshold,
-                    detection_types
-                )
-                all_detections.extend(yolo_detections)
-                
-                # Separate person and vehicle detections
-                person_detections = [d for d in yolo_detections if d.detection_type == DetectionType.PERSON]
-                vehicle_detections = [d for d in yolo_detections if d.detection_type == DetectionType.VEHICLE]
-            
-            # Motion detection
-            if DetectionType.MOTION in detection_types:
-                motion_detections = self.motion_detector.detect(frame, method="background_subtraction")
-                all_detections.extend(motion_detections)
-            
-            # Advanced features
-            advanced_results = {}
-            
-            if enable_advanced_features:
-                # Crowd detection
-                if DetectionType.CROWD in detection_types and person_detections:
-                    crowd_detections = self.crowd_detector.detect_crowd(
-                        person_detections=person_detections,
-                        image_shape=frame.shape[:2]
-                    )
-                    all_detections.extend(crowd_detections)
-                
-                # Vehicle counting (with tracking)
-                if DetectionType.VEHICLE in detection_types and vehicle_detections:
-                    counting_results = self.vehicle_counter.count_vehicles(
-                        vehicle_detections=vehicle_detections,
-                        frame_number=frame_number,
-                        image_width=frame.shape[1]
-                    )
-                    advanced_results["vehicle_counting"] = counting_results
-            
-            return {
-                "frame_number": frame_number,
-                "detections": [self._detection_to_dict(d) for d in all_detections],
-                "detection_count": len(all_detections),
-                "person_count": len(person_detections),
-                "vehicle_count": len(vehicle_detections),
-                "advanced_results": advanced_results if advanced_results else None
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing video frame {frame_number}: {str(e)}")
-            return {
-                "frame_number": frame_number,
-                "detections": [],
-                "detection_count": 0,
-                "error": str(e)
-            }
-            
     def process_image_from_bytes(
         self,
         image_bytes: bytes,
@@ -323,9 +288,10 @@ class ImageProcessor:
         confidence_threshold: float = None,
         return_image: bool = False,
         image_format: str = "jpeg",
-        enable_advanced_features: bool = True
+        enable_advanced_features: bool = True,
+        return_base64: bool = True  # parameter to return base64
     ) -> Dict[str, Any]:
-        """Process image from bytes instead of file path"""
+        """Process image from bytes instead of file path - NO DATABASE"""
         import tempfile
         import os
         from pathlib import Path
@@ -342,14 +308,15 @@ class ImageProcessor:
             # Convert to Path object
             image_path_obj = Path(temp_filepath)
             
-            # Process using existing method
+            # Process using existing method with base64 parameter
             result = self.process_image(
                 image_path=image_path_obj,
                 detection_types=detection_types,
                 confidence_threshold=confidence_threshold,
                 return_image=return_image,
                 image_format=image_format,
-                enable_advanced_features=enable_advanced_features
+                enable_advanced_features=enable_advanced_features,
+                return_base64=return_base64  # Pass the parameter
             )
             
             return result
@@ -361,6 +328,33 @@ class ImageProcessor:
                     os.unlink(temp_filepath)
                 except:
                     pass
+        
+    # Helper method to convert image to base64
+    def _image_to_base64(self, image: np.ndarray, image_format: str = "jpeg") -> str:
+        """Convert OpenCV image to base64 string"""
+        try:
+            # Convert BGR to RGB (OpenCV uses BGR, but for web we want RGB)
+            if len(image.shape) == 3:
+                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            else:
+                image_rgb = image
+            
+            # Encode image to bytes
+            success, encoded_image = cv2.imencode(f'.{image_format}', image_rgb)
+            
+            if not success:
+                raise ProcessingException(message="Failed to encode image")
+            
+            # Convert to base64
+            base64_string = base64.b64encode(encoded_image.tobytes()).decode('utf-8')
+            
+            # Return data URL format
+            mime_type = "image/jpeg" if image_format.lower() in ["jpg", "jpeg"] else f"image/{image_format}"
+            return f"data:{mime_type};base64,{base64_string}"
+            
+        except Exception as e:
+            logger.error(f"Error converting image to base64: {str(e)}")
+            return None
     
     def _detect_with_yolo(
         self,
@@ -448,19 +442,28 @@ class ImageProcessor:
         # Create a copy of the image
         result_image = image.copy()
         
-        # Colors for different detection types
+        # Colors for different detection types (consistent with file_handling.py)
         colors = {
-            DetectionType.PERSON: (0, 255, 0),  # Green
-            DetectionType.VEHICLE: (255, 0, 0),  # Blue
-            DetectionType.FACE: (0, 255, 255),  # Yellow
-            DetectionType.MOTION: (0, 0, 255),  # Red
-            DetectionType.OBJECT: (255, 255, 0),  # Cyan
-            DetectionType.CROWD: (255, 0, 255),  # Magenta
+            DetectionType.PERSON: (0, 255, 0),      # Green
+            DetectionType.VEHICLE: (255, 0, 0),     # Blue
+            DetectionType.FACE: (0, 255, 255),      # Yellow
+            DetectionType.MOTION: (0, 0, 255),      # Red
+            DetectionType.OBJECT: (255, 255, 0),    # Cyan
+            DetectionType.CROWD: (255, 0, 255),     # Magenta
+            'car': (255, 0, 0),                    # Blue
+            'truck': (0, 0, 255),                  # Red
+            'bus': (255, 255, 0),                  # Cyan
+            'motorcycle': (0, 255, 255),           # Yellow
+            'vehicle': (128, 0, 128),              # Purple
         }
         
         for detection in detections:
             # Get color for this detection type
-            color = colors.get(detection.detection_type, (255, 255, 255))
+            color = colors.get(detection.detection_type, (255, 165, 0))  # Orange default
+            
+            # Also check label for vehicle types
+            if detection.label and detection.label.lower() in colors:
+                color = colors[detection.label.lower()]
             
             # Draw bounding box
             x1, y1, x2, y2 = detection.bbox
@@ -470,14 +473,18 @@ class ImageProcessor:
             label = f"{detection.label}: {detection.confidence:.2f}"
             
             # Calculate text size
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            text_thickness = 1
+            
             (text_width, text_height), baseline = cv2.getTextSize(
-                label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                label, font, font_scale, text_thickness
             )
             
-            # Draw label background
+            # Draw label background (filled rectangle)
             cv2.rectangle(
                 result_image, 
-                (x1, y1 - text_height - 5),
+                (x1, y1 - text_height - baseline - 5),
                 (x1 + text_width, y1),
                 color,
                 -1  # Filled rectangle
@@ -487,11 +494,12 @@ class ImageProcessor:
             cv2.putText(
                 result_image,
                 label,
-                (x1, y1 - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 0, 0),  # Black text
-                1
+                (x1, y1 - baseline - 5),
+                font,
+                font_scale,
+                (255, 255, 255),  # White text
+                text_thickness,
+                cv2.LINE_AA
             )
         
         return result_image

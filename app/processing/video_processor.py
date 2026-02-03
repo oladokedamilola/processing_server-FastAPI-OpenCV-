@@ -1,3 +1,4 @@
+# app/processing/video_processor.py
 """
 Enhanced video processing with format compatibility, advanced features, and optimizations
 """
@@ -8,12 +9,15 @@ from pathlib import Path
 import time
 import threading
 import gc
+import base64
+import tempfile
+import subprocess
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..core.config import settings
 from ..core.exceptions import ProcessingException
 from ..core.memory_manager import memory_manager
-from ..core.cache import cache_manager
 from ..utils.logger import logger
 from ..utils.file_handling import (
     validate_video_file,
@@ -46,6 +50,84 @@ class VideoProcessor:
         self.cache_lock = threading.Lock()
         
         logger.info("Video processor initialized with optimizations")
+    
+    def _frame_to_base64(self, frame: np.ndarray, quality: int = 85) -> str:
+        """Convert OpenCV frame to base64 string"""
+        try:
+            # Convert BGR to RGB
+            if len(frame.shape) == 3:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            else:
+                frame_rgb = frame
+            
+            # Encode to JPEG
+            success, encoded_image = cv2.imencode('.jpg', frame_rgb, 
+                                                 [cv2.IMWRITE_JPEG_QUALITY, quality])
+            
+            if not success:
+                raise ProcessingException(message="Failed to encode frame to JPEG")
+            
+            # Convert to base64
+            base64_string = base64.b64encode(encoded_image.tobytes()).decode('utf-8')
+            
+            # Return data URL format
+            return f"data:image/jpeg;base64,{base64_string}"
+            
+        except Exception as e:
+            logger.error(f"Error converting frame to base64: {str(e)}")
+            return None
+    
+    def _extract_key_frames_base64(
+        self,
+        cap,
+        total_frames: int,
+        num_key_frames: int = 5,
+        quality: int = 70
+    ) -> List[Dict[str, Any]]:
+        """Extract key frames as base64 images"""
+        try:
+            if total_frames <= 0 or num_key_frames <= 0:
+                return []
+            
+            # Calculate frame indices for key frames
+            if num_key_frames >= total_frames:
+                # If we want more key frames than total frames, use all frames
+                frame_indices = list(range(total_frames))
+            else:
+                # Distribute key frames evenly
+                frame_indices = [int(i * total_frames / num_key_frames) for i in range(num_key_frames)]
+            
+            key_frames = []
+            
+            for frame_idx in frame_indices:
+                # Seek to frame
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                
+                if ret:
+                    # Convert to base64
+                    frame_base64 = self._frame_to_base64(frame, quality)
+                    
+                    if frame_base64:
+                        # Get timestamp
+                        fps = cap.get(cv2.CAP_PROP_FPS)
+                        timestamp = frame_idx / fps if fps > 0 else 0
+                        
+                        key_frames.append({
+                            "frame_number": frame_idx,
+                            "timestamp": round(timestamp, 2),
+                            "frame_base64": frame_base64,
+                            "frame_size": f"{frame.shape[1]}x{frame.shape[0]}"
+                        })
+                
+                # Reset to beginning for next operations
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            
+            return key_frames
+            
+        except Exception as e:
+            logger.error(f"Error extracting key frames: {str(e)}")
+            return []
     
     def validate_and_prepare_video(
         self,
@@ -114,8 +196,10 @@ class VideoProcessor:
         analyze_motion: bool = True,
         return_summary_only: bool = False,
         enable_advanced_features: bool = True,
-        force_conversion: bool = False,
-        max_workers: Optional[int] = None  # Added from optimized version
+        return_key_frames_base64: bool = True,  # NEW: parameter for base64 key frames
+        num_key_frames: int = 5,  # NEW: number of key frames to extract
+        key_frames_quality: int = 70,  # NEW: quality for key frames
+        max_workers: Optional[int] = None
     ) -> Dict[str, Any]:
         """Process a video file with enhanced format handling, advanced features, and optimizations"""
         start_time = time.time()
@@ -139,8 +223,6 @@ class VideoProcessor:
             logger.info(f"  FPS: {video_info.get('fps', 0):.1f}")
             logger.info(f"  Duration: {video_info.get('duration', 0):.1f}s")
             logger.info(f"  Frames: {video_info.get('frames', 0)}")
-            logger.info(f"  Memory status: {memory_status['status']}")
-            logger.info(f"  Available memory: {memory_status['stats']['system_available_mb']:.1f}MB")
             
             if prep_message:
                 logger.info(f"  Preprocessing: {prep_message}")
@@ -184,6 +266,18 @@ class VideoProcessor:
                     message="Cannot open video file after conversion attempt",
                     details={"path": str(processed_path)}
                 )
+            
+            # Extract key frames as base64 if requested
+            key_frames_base64 = []
+            if return_key_frames_base64:
+                logger.info(f"Extracting {num_key_frames} key frames as base64...")
+                key_frames_base64 = self._extract_key_frames_base64(
+                    cap=cap,
+                    total_frames=video_info["frames"],
+                    num_key_frames=num_key_frames,
+                    quality=key_frames_quality
+                )
+                logger.info(f"Extracted {len(key_frames_base64)} key frames as base64")
             
             # Get video properties from OpenCV (may differ from ffprobe)
             opencv_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -275,27 +369,38 @@ class VideoProcessor:
             
             logger.info(f"Video processing complete: {processed_frames} frames processed in {processing_time:.1f}s")
             logger.info(f"  Processing speed: {processed_frames/processing_time:.1f} FPS")
-            logger.info(f"  Memory after processing: {memory_manager.get_memory_stats().process_rss / 1024 / 1024:.1f}MB")
             
             # Clear caches to free memory
             self._clear_caches()
             
-            # Prepare response
+            # Prepare response with base64 support
             response = {
                 "success": True,
                 "processing_time": round(processing_time, 3),
-                "video_info": summary["video_info"],  # Includes all video info
+                "video_info": summary["video_info"],
                 "summary": summary,
-                "supported_formats": self.supported_formats if enable_advanced_features else None,
                 "optimizations": {
                     "sample_rate": sample_rate,
-                    "memory_used_mb": round(memory_manager.get_memory_stats().process_rss / 1024 / 1024, 1),
                     "processing_speed_fps": round(processed_frames / processing_time, 1)
-                }
+                },
+                "key_frames_base64": key_frames_base64 if return_key_frames_base64 else [],  # NEW
+                "has_key_frames": len(key_frames_base64) > 0 if return_key_frames_base64 else False,  # NEW
+                "key_frames_count": len(key_frames_base64) if return_key_frames_base64 else 0  # NEW
             }
             
             if not return_summary_only:
-                response["frame_results"] = frame_results[:100]  # Limit to first 100 frames
+                # Limit frame results to avoid huge responses
+                limited_frame_results = frame_results[:50]  # First 50 frames
+                
+                # Optionally add base64 for first few frames
+                if return_key_frames_base64 and len(frame_results) > 0:
+                    # Add base64 for first frame with detections
+                    first_detection_frame = next((fr for fr in frame_results if fr["detection_count"] > 0), None)
+                    if first_detection_frame:
+                        # We would need to extract this frame, but for now just mark it
+                        response["first_detection_frame"] = first_detection_frame["frame_number"]
+                
+                response["frame_results"] = limited_frame_results
             
             return response
             
@@ -307,6 +412,161 @@ class VideoProcessor:
                 message="Error processing video",
                 details={"error": str(e)}
             )
+    
+    def process_video_in_chunks(
+        self,
+        video_path: Path,
+        chunk_duration: int = 60,  # 60-second chunks
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Process video in chunks for better memory management"""
+        try:
+            # Get video duration
+            video_info = get_video_info(video_path)
+            duration = video_info["duration"]
+            
+            # If video is short, use normal processing
+            if duration <= chunk_duration * 2:  # Less than 2 chunks
+                return self.process_video(video_path, **kwargs)
+            
+            logger.info(f"Processing video in chunks: {duration:.1f}s total, {chunk_duration}s chunks")
+            
+            # Calculate number of chunks
+            num_chunks = max(1, int(duration / chunk_duration) + 1)
+            
+            chunk_results = []
+            
+            for chunk_idx in range(num_chunks):
+                start_time = chunk_idx * chunk_duration
+                end_time = min((chunk_idx + 1) * chunk_duration, duration)
+                chunk_length = end_time - start_time
+                
+                logger.info(f"Processing chunk {chunk_idx + 1}/{num_chunks}: {start_time:.1f}s - {end_time:.1f}s")
+                
+                # Create temp file for chunk
+                with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
+                    chunk_path = Path(tmp.name)
+                
+                # Extract chunk using FFmpeg
+                cmd = [
+                    'ffmpeg',
+                    '-i', str(video_path),
+                    '-ss', str(start_time),
+                    '-t', str(chunk_length),
+                    '-c', 'copy',
+                    '-avoid_negative_ts', 'make_zero',
+                    '-y',
+                    str(chunk_path)
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                
+                if result.returncode != 0:
+                    logger.warning(f"Failed to extract chunk {chunk_idx}: {result.stderr}")
+                    continue
+                
+                # Process chunk
+                chunk_result = self.process_video(
+                    chunk_path,
+                    return_summary_only=True,
+                    **{k: v for k, v in kwargs.items() if k != 'return_summary_only'}
+                )
+                
+                # Add chunk timing info
+                chunk_result["chunk_info"] = {
+                    "chunk_index": chunk_idx,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "duration": chunk_length
+                }
+                
+                chunk_results.append(chunk_result)
+                
+                # Clean up chunk file
+                if chunk_path.exists():
+                    try:
+                        chunk_path.unlink()
+                    except:
+                        pass
+            
+            # Combine results
+            combined_result = self._combine_chunk_results(chunk_results, video_info)
+            
+            return combined_result
+            
+        except Exception as e:
+            logger.error(f"Error processing video in chunks: {str(e)}")
+            raise ProcessingException(
+                message="Error processing video in chunks",
+                details={"error": str(e)}
+            )
+    
+    def _combine_chunk_results(
+        self,
+        chunk_results: List[Dict[str, Any]],
+        original_video_info: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Combine results from multiple chunks"""
+        try:
+            if not chunk_results:
+                raise ProcessingException(message="No chunk results to combine")
+            
+            # Combine all detections
+            all_detections = []
+            all_frame_results = []
+            
+            for chunk_result in chunk_results:
+                chunk_info = chunk_result.get("chunk_info", {})
+                start_time = chunk_info.get("start_time", 0)
+                
+                # Adjust timestamps for chunk detections
+                if "summary" in chunk_result and "all_detections" in chunk_result["summary"]:
+                    for detection in chunk_result["summary"]["all_detections"]:
+                        # Adjust timestamps to absolute video time
+                        if "timestamp" in detection:
+                            detection["timestamp"] += start_time
+                        all_detections.append(detection)
+                
+                # Adjust frame results timestamps
+                if "frame_results" in chunk_result:
+                    for frame_result in chunk_result["frame_results"]:
+                        frame_result["timestamp"] += start_time
+                        all_frame_results.append(frame_result)
+            
+            # Create combined summary
+            combined_summary = {
+                "video_info": original_video_info,
+                "total_detections": len(all_detections),
+                "detection_counts": self._count_detections_by_type(all_detections),
+                "chunks_processed": len(chunk_results),
+                "processing_method": "chunked"
+            }
+            
+            # Calculate overall statistics
+            total_processing_time = sum(chunk.get("processing_time", 0) for chunk in chunk_results)
+            total_processed_frames = sum(chunk.get("summary", {}).get("frames_processed", 0) for chunk in chunk_results)
+            
+            return {
+                "success": True,
+                "processing_time": round(total_processing_time, 3),
+                "video_info": original_video_info,
+                "summary": combined_summary,
+                "frame_results": all_frame_results[:100],  # Limit to first 100 frames
+                "chunk_count": len(chunk_results),
+                "processing_method": "chunked"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error combining chunk results: {str(e)}")
+            raise
+    
+    def _count_detections_by_type(self, detections: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Count detections by type"""
+        counts = {}
+        for detection in detections:
+            det_type = detection.get("type", "unknown")
+            counts[det_type] = counts.get(det_type, 0) + 1
+        return counts
     
     def _process_frames_optimized(
         self,
@@ -327,8 +587,8 @@ class VideoProcessor:
         frame_count = 0
         last_progress_update = 0
         
-        # Use smaller batch size for memory efficiency
-        batch_size = max(1, max_workers * 2)
+        # Use smaller batch size for memory efficiency - IMPORTANT
+        batch_size = 1  # Process one frame at a time to save memory
         
         while True:
             # Read batch of frames
@@ -361,7 +621,7 @@ class VideoProcessor:
                 confidence_threshold=confidence_threshold,
                 analyze_motion=analyze_motion,
                 enable_advanced_features=enable_advanced_features,
-                max_workers=max_workers
+                max_workers=1  # Reduced to 1 worker for memory
             )
             
             frame_results.extend(batch_results)
@@ -384,21 +644,25 @@ class VideoProcessor:
                             "video_info": {
                                 "fps": fps,
                                 "resolution": f"{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}",
-                                "codec": "unknown"  # OpenCV doesn't provide codec info
+                                "codec": "unknown"
                             }
                         }
                     )
                     last_progress_update = progress
             
-            # Check memory periodically
-            if processed_frames % 50 == 0:
+            # Check memory periodically and clear aggressively
+            if processed_frames % 5 == 0:
+                # Force garbage collection
+                gc.collect()
+                
+                # Clear the frames batch to free memory
+                frames_batch.clear()
+                
+                # Check memory status
                 memory_status = memory_manager.check_memory_usage()
                 if memory_status["status"] == "critical":
                     logger.warning("Memory critical during video processing")
                     memory_manager.optimize_memory()
-                
-                # Clear frame cache to free memory
-                self._clear_frame_cache()
         
         return frame_results, processed_frames
     
@@ -417,7 +681,7 @@ class VideoProcessor:
         results = []
         
         # Use ThreadPoolExecutor for parallel processing
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:  # Only 1 worker for memory
             # Submit all frames for processing
             future_to_index = {}
             for i, (frame, frame_idx) in enumerate(zip(frames, frame_indices)):
@@ -437,7 +701,7 @@ class VideoProcessor:
             for future in as_completed(future_to_index):
                 i = future_to_index[future]
                 try:
-                    result = future.result(timeout=10.0)  # 10 second timeout per frame
+                    result = future.result(timeout=15.0)  # Increased timeout
                     results.append(result)
                 except Exception as e:
                     logger.error(f"Error processing frame {frame_indices[i]}: {str(e)}")
@@ -529,8 +793,6 @@ class VideoProcessor:
     ) -> str:
         """Generate cache key for frame"""
         # Use frame hash and processing parameters
-        import hashlib
-        
         # Create simplified frame signature (average color + dimensions)
         frame_info = f"{frame.shape}_{frame.mean():.2f}_{frame.std():.2f}"
         params = f"{sorted(detection_types)}_{confidence_threshold}"
@@ -541,19 +803,19 @@ class VideoProcessor:
     def _calculate_optimal_sample_rate(self, fps: float, total_frames: int) -> int:
         """Calculate optimal frame sample rate based on video characteristics"""
         if fps <= 0:
-            return settings.DEFAULT_FRAME_SAMPLE_RATE
+            return 15  # Increased for memory efficiency
         
-        # Adjust sample rate based on FPS and duration
+        # Process fewer frames for memory efficiency
         duration = total_frames / fps
         
         if duration > 300:  # Very long video (>5 min)
-            return max(10, int(fps / 2))  # Process at most 0.5 FPS
+            return max(20, int(fps / 5))  # Process at most 0.2 FPS
         elif duration > 120:  # Long video (2-5 min)
-            return max(5, int(fps / 3))  # Process at most ~0.33 FPS
+            return max(15, int(fps / 7))  # Process at most ~0.14 FPS
         elif duration > 60:  # Medium video (1-2 min)
-            return max(3, int(fps / 5))  # Process at most 0.2 FPS
+            return max(10, int(fps / 10))  # Process at most 0.1 FPS
         else:  # Short video (<1 min)
-            return max(1, int(fps / 10))  # Process at most 0.1 FPS
+            return max(5, int(fps / 15))  # Process at most ~0.07 FPS
     
     # Keep all the summary and utility methods from the original
     def process_video_legacy(

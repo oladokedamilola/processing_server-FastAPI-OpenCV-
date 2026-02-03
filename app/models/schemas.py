@@ -1,3 +1,4 @@
+# app/models/schemas.py
 """
 Pydantic models for request/response schemas
 """
@@ -30,6 +31,7 @@ class ImageProcessingRequest(BaseModel):
     )
     return_image: Optional[bool] = Field(False, description="Return processed image")
     image_format: Optional[str] = Field("jpeg", description="Format for returned image")
+    enable_advanced_features: Optional[bool] = Field(True, description="Enable advanced features like crowd detection")
 
 class VideoProcessingRequest(BaseModel):
     """Request model for video processing"""
@@ -40,6 +42,7 @@ class VideoProcessingRequest(BaseModel):
     frame_sample_rate: Optional[int] = Field(5, ge=1, le=30, description="Process every Nth frame")
     analyze_motion: Optional[bool] = Field(True)
     return_summary_only: Optional[bool] = Field(False, description="Return only summary, not per-frame results")
+    enable_advanced_features: Optional[bool] = Field(True, description="Enable advanced features")
 
 # Response Models
 class DetectionResult(BaseModel):
@@ -61,11 +64,21 @@ class ProcessingResponse(BaseModel):
     message: Optional[str] = None
     warnings: Optional[List[str]] = Field(default_factory=list)
 
+
+
 class ImageProcessingResponse(ProcessingResponse):
     """Response for image processing"""
     processed_image_url: Optional[str] = None
+    processed_image_base64: Optional[str] = None  # base64 encoded image
+    has_processed_image: Optional[bool] = Field(False, description="Whether processed image with bounding boxes is available")
     image_format: Optional[str] = None
-
+    models_used: Optional[List[str]] = Field(default_factory=list, description="Models used for processing")
+    statistics: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Processing statistics")
+    advanced_results: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Advanced processing results")
+    django_media_id: Optional[int] = None  # Pass Django ID back
+    django_user_id: Optional[int] = None   # Pass Django user ID back
+    
+    
 class VideoProcessingResponse(BaseModel):
     """Response for video processing initiation"""
     success: bool
@@ -114,3 +127,20 @@ class ErrorResponse(BaseModel):
     error_code: str
     details: Optional[Dict[str, Any]] = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+    
+    
+
+class VideoProcessingResponse(BaseModel):
+    """Response for video processing"""
+    success: bool
+    job_id: str
+    video_info: Dict[str, Any]
+    summary: Dict[str, Any]
+    processing_time: float
+    key_frames_base64: Optional[List[Dict[str, Any]]] = None  # Base64 key frames
+    has_key_frames: Optional[bool] = False
+    key_frames_count: Optional[int] = 0
+    frame_results: Optional[List[Dict[str, Any]]] = None
+    optimizations: Optional[Dict[str, Any]] = None
+    django_media_id: Optional[int] = None
+    django_user_id: Optional[int] = None

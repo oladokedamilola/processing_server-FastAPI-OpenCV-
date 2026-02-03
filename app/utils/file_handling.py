@@ -1,3 +1,4 @@
+# app/utils/file_handling.py
 """
 Enhanced file handling utilities with video format support
 """
@@ -13,6 +14,10 @@ import cv2
 import numpy as np
 import subprocess
 import tempfile
+from io import BytesIO
+import datetime
+import random
+
 
 from ..core.config import settings
 from ..core.exceptions import FileValidationError
@@ -542,3 +547,331 @@ def save_upload_file(upload_file: UploadFile, destination: Path) -> str:
     except Exception as e:
         logger.error(f"Error saving uploaded file {upload_file.filename}: {str(e)}")
         raise FileValidationError(f"Could not save file: {str(e)}")
+    
+    
+    
+def draw_bounding_boxes(image: np.ndarray, detections: list, 
+                       confidence_threshold: float = 0.5) -> np.ndarray:
+    """
+    Draw bounding boxes on image based on detections.
+    
+    Args:
+        image: Original image as numpy array (BGR format from OpenCV)
+        detections: List of detection dictionaries
+        confidence_threshold: Minimum confidence to draw box
+    
+    Returns:
+        Image with bounding boxes drawn
+    """
+    # Create a copy of the image
+    annotated_image = image.copy()
+    
+    # Define colors for different object types
+    color_map = {
+        'person': (0, 255, 0),      # Green
+        'car': (255, 0, 0),         # Blue
+        'truck': (0, 0, 255),       # Red
+        'bus': (255, 255, 0),       # Cyan
+        'motorcycle': (0, 255, 255), # Yellow
+        'vehicle': (128, 0, 128),   # Purple
+        'default': (255, 165, 0)    # Orange for other objects
+    }
+    
+    for detection in detections:
+        # Skip if confidence is below threshold
+        confidence = detection.get('confidence', 0)
+        if confidence < confidence_threshold:
+            continue
+        
+        # Get object type/label
+        obj_type = detection.get('label', detection.get('type', detection.get('class', 'unknown')))
+        obj_type_lower = obj_type.lower()
+        
+        # Get bounding box coordinates
+        bbox = detection.get('bbox')
+        if not bbox:
+            continue
+        
+        # Parse bounding box (could be list or dict)
+        if isinstance(bbox, dict):
+            x1 = int(bbox.get('x1', 0))
+            y1 = int(bbox.get('y1', 0))
+            x2 = int(bbox.get('x2', 0))
+            y2 = int(bbox.get('y2', 0))
+        elif isinstance(bbox, list) and len(bbox) >= 4:
+            x1 = int(bbox[0])
+            y1 = int(bbox[1])
+            x2 = int(bbox[2])
+            y2 = int(bbox[3])
+        else:
+            continue  # Skip invalid bbox
+        
+        # Ensure coordinates are within image bounds
+        height, width = annotated_image.shape[:2]
+        x1 = max(0, min(x1, width - 1))
+        y1 = max(0, min(y1, height - 1))
+        x2 = max(0, min(x2, width - 1))
+        y2 = max(0, min(y2, height - 1))
+        
+        if x1 >= x2 or y1 >= y2:
+            continue  # Skip invalid box
+        
+        # Get color for this object type
+        color = None
+        for key in color_map:
+            if key in obj_type_lower:
+                color = color_map[key]
+                break
+        
+        if color is None:
+            color = color_map['default']
+        
+        # Draw bounding box
+        thickness = 2
+        cv2.rectangle(annotated_image, (x1, y1), (x2, y2), color, thickness)
+        
+        # Draw label with confidence
+        label = f"{obj_type}: {confidence:.2f}"
+        
+        # Calculate text size
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        text_thickness = 1
+        
+        # Get text size
+        (text_width, text_height), baseline = cv2.getTextSize(
+            label, font, font_scale, text_thickness
+        )
+        
+        # Draw filled rectangle for text background
+        cv2.rectangle(
+            annotated_image,
+            (x1, y1 - text_height - baseline - 5),
+            (x1 + text_width, y1),
+            color,
+            -1  # Filled rectangle
+        )
+        
+        # Draw text
+        cv2.putText(
+            annotated_image,
+            label,
+            (x1, y1 - baseline - 5),
+            font,
+            font_scale,
+            (255, 255, 255),  # White text
+            text_thickness,
+            cv2.LINE_AA
+        )
+    
+    return annotated_image
+
+
+def save_processed_image(original_image: np.ndarray, detections: list, 
+                        output_path: Path, image_format: str = 'jpg',
+                        quality: int = 85) -> Tuple[bool, Optional[str]]:
+    """
+    Save processed image with bounding boxes drawn.
+    
+    Args:
+        original_image: Original image as numpy array (BGR format)
+        detections: List of detection dictionaries
+        output_path: Path where to save the processed image
+        image_format: Output format ('jpg', 'png', etc.)
+        quality: Quality for JPEG (1-100)
+    
+    Returns:
+        Tuple of (success, error_message)
+    """
+    try:
+        # Ensure output directory exists
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Draw bounding boxes on image
+        annotated_image = draw_bounding_boxes(original_image, detections)
+        
+        # Save the image
+        if image_format.lower() in ['jpg', 'jpeg']:
+            cv2.imwrite(
+                str(output_path), 
+                annotated_image, 
+                [cv2.IMWRITE_JPEG_QUALITY, quality]
+            )
+        elif image_format.lower() == 'png':
+            cv2.imwrite(
+                str(output_path), 
+                annotated_image, 
+                [cv2.IMWRITE_PNG_COMPRESSION, 9 - (quality // 10)]
+            )
+        else:
+            cv2.imwrite(str(output_path), annotated_image)
+        
+        logger.info(f"Processed image saved: {output_path}")
+        return True, None
+        
+    except Exception as e:
+        logger.error(f"Error saving processed image: {str(e)}")
+        return False, str(e)
+
+
+def generate_processed_filename(original_filename: str, suffix: str = "processed") -> str:
+    """
+    Generate a unique filename for processed images.
+    
+    Args:
+        original_filename: Original uploaded filename
+        suffix: Suffix to add (e.g., 'processed', 'annotated')
+    
+    Returns:
+        Generated filename
+    """
+    # Get original file extension
+    original_path = Path(original_filename)
+    extension = original_path.suffix.lower()
+    
+    if not extension:
+        extension = '.jpg'  # Default
+    
+    # Generate unique filename with timestamp
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    random_str = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=6))
+    
+    # Clean original filename (remove extension)
+    original_stem = original_path.stem
+    original_stem = ''.join(c for c in original_stem if c.isalnum() or c in '._- ')
+    
+    # Build new filename
+    new_filename = f"{original_stem}_{suffix}_{timestamp}_{random_str}{extension}"
+    
+    return new_filename
+
+
+# app/utils/file_handling.py
+def get_processed_image_url(filename: str) -> str:
+    """
+    Generate PUBLIC URL for processed images.
+    """
+    # Use simple, predictable URL format
+    return f"http://localhost:8001/media/processed/{filename}"
+
+
+
+def save_and_get_processed_image(original_image: np.ndarray, detections: list, 
+                               original_filename: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Save processed image and return its URL - OPTIONAL FOR DEBUGGING
+    """
+    from ..core.config import settings
+    
+    # Check if we should save images
+    if not settings.SAVE_PROCESSED_IMAGES:
+        logger.debug("Image saving disabled in config (SAVE_PROCESSED_IMAGES=False)")
+        return None, "Image saving disabled in config"
+    
+    try:
+        # Generate filename for processed image
+        processed_filename = generate_processed_filename(original_filename)
+        processed_path = settings.PROCESSED_IMAGES_PATH / processed_filename
+        
+        # DEBUG: Log where we're saving
+        logger.debug(f"Saving processed image to: {processed_path}")
+        logger.debug(f"PROCESSED_IMAGES_PATH: {settings.PROCESSED_IMAGES_PATH}")
+        logger.debug(f"Directory exists: {settings.PROCESSED_IMAGES_PATH.exists()}")
+        
+        # Ensure directory exists
+        processed_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Save processed image
+        success, error = save_processed_image(
+            original_image, 
+            detections, 
+            processed_path,
+            image_format='jpg',
+            quality=90
+        )
+        
+        if not success:
+            return None, error
+        
+        # Generate URL for the processed image (for debugging only)
+        image_url = f"{settings.SERVER_BASE_URL}/media/processed/{processed_filename}"
+        
+        logger.info(f"Processed image saved (debug mode): {processed_path}")
+        logger.debug(f"Debug URL generated: {image_url}")
+        return image_url, None
+        
+    except Exception as e:
+        logger.error(f"Error in save_and_get_processed_image: {str(e)}")
+        return None, str(e)
+
+
+def cleanup_old_processed_files(max_age_hours: int = 24) -> Dict[str, Any]:
+    """
+    Clean up old processed files to save disk space.
+    
+    Args:
+        max_age_hours: Maximum age of files to keep (hours)
+    
+    Returns:
+        Dictionary with cleanup statistics
+    """
+    try:
+        import time
+        from datetime import datetime, timedelta
+        
+        stats = {
+            "processed_images": {"total": 0, "deleted": 0, "errors": 0},
+            "processed_videos": {"total": 0, "deleted": 0, "errors": 0},
+            "total_deleted_size_mb": 0
+        }
+        
+        # Calculate cutoff time
+        cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
+        
+        # Clean processed images
+        if settings.PROCESSED_IMAGES_PATH.exists():
+            for file_path in settings.PROCESSED_IMAGES_PATH.glob("*"):
+                if file_path.is_file():
+                    stats["processed_images"]["total"] += 1
+                    
+                    # Check file age
+                    file_mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
+                    if file_mtime < cutoff_time:
+                        try:
+                            file_size = file_path.stat().st_size
+                            file_path.unlink()
+                            stats["processed_images"]["deleted"] += 1
+                            stats["total_deleted_size_mb"] += file_size / (1024 * 1024)
+                        except Exception as e:
+                            logger.error(f"Error deleting {file_path}: {str(e)}")
+                            stats["processed_images"]["errors"] += 1
+        
+        # Clean processed videos
+        if settings.PROCESSED_VIDEOS_PATH.exists():
+            for file_path in settings.PROCESSED_VIDEOS_PATH.glob("*"):
+                if file_path.is_file():
+                    stats["processed_videos"]["total"] += 1
+                    
+                    # Check file age
+                    file_mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
+                    if file_mtime < cutoff_time:
+                        try:
+                            file_size = file_path.stat().st_size
+                            file_path.unlink()
+                            stats["processed_videos"]["deleted"] += 1
+                            stats["total_deleted_size_mb"] += file_size / (1024 * 1024)
+                        except Exception as e:
+                            logger.error(f"Error deleting {file_path}: {str(e)}")
+                            stats["processed_videos"]["errors"] += 1
+        
+        logger.info(f"Cleanup completed: {stats['processed_images']['deleted']} images and "
+                   f"{stats['processed_videos']['deleted']} videos deleted")
+        
+        return stats
+        
+    except Exception as e:
+        logger.error(f"Error in cleanup_old_processed_files: {str(e)}")
+        return {"error": str(e)}
+    
+    
+    

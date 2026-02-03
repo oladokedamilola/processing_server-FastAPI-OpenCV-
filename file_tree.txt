@@ -12,6 +12,7 @@ processing_server/ (FastAPI + OpenCV)
 │   │   │   │   └── __init__.py
 │   │   │   ├── __pycache__/
 │   │   │   └── __init__.py
+│   │   ├── __pycache__/
 │   │   └── __init__.py
 │   ├── core/
 │   │   ├── __pycache__/
@@ -21,10 +22,12 @@ processing_server/ (FastAPI + OpenCV)
 │   │   ├── exceptions.py
 │   │   ├── memory_manager.py
 │   │   ├── processor.py
+│   │   ├── pytorch_patch.py
 │   │   ├── security.py
 │   │   ├── timeout.py
 │   │   └── __init__.py
 │   ├── jobs/
+│   │   ├── __pycache__/
 │   │   ├── job_db.py
 │   │   ├── manager.py
 │   │   ├── models.py
@@ -50,17 +53,22 @@ processing_server/ (FastAPI + OpenCV)
 │   │   ├── file_handling.py
 │   │   ├── logger.py
 │   │   └── __init__.py
+│   ├── __pycache__/
+│   ├── main.py
 │   └── __init__.py
 ├── logs/
 ├── models/
 ├── processed/
+├── temp/
+├── uploads/
 ├── .env
 ├── .env.example
 ├── .gitignore
 ├── debug_config.py
 ├── download_model.py
+├── file_tree.txt
 ├── installed-requirementx.txt
-├── README.md
+├── simple_server.py
 ├── start_server.py
 ├── test_advanced.py
 ├── test_api.py
@@ -69,6 +77,4 @@ processing_server/ (FastAPI + OpenCV)
 ├── test_import.py
 ├── test_jobs.py
 ├── test_performance.py
-├── test_server.py
-├── test_structure.py
-└── test_video_formats.py
+├── test_video_formats.py

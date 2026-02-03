@@ -1,111 +1,77 @@
 """
 FastAPI Processing Server - Main Application
+Simplified version without database/job queue for Django integration
 """
 # APPLY PYTORCH PATCH FIRST - BEFORE ANY OTHER IMPORTS!
 import app.core.pytorch_patch  # Ensure PyTorch patch is applied BEFORE anything else
 from fastapi import FastAPI, Request, status, HTTPException, File, UploadFile
 from fastapi.responses import JSONResponse
-from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from contextlib import asynccontextmanager
 import time
 import traceback
 from typing import Dict, Any
-from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
+import os
+
 from .core.config import settings
-from .core.exceptions import ProcessingException, create_http_exception
+from .core.exceptions import ProcessingException
 from .core.security import rate_limit_middleware
 from .api.v1 import router as api_v1_router
 from .utils.logger import logger
 from .models.schemas import ErrorResponse
 from .core.processor import init_processor, get_processor
 
-# Import job management components
-from .jobs.manager import JobQueueManager
-from .jobs.processors import JobProcessors
-from .jobs.models import JobType
-
-# Global instances
+# Global processor instance
 processor = None
-job_manager = None
 
-def init_job_manager():
-    """Initialize job manager"""
-    global job_manager
-    
-    if job_manager is None:
-        try:
-            job_manager = JobQueueManager()
-            
-            # Initialize processors
-            job_processors = JobProcessors()
-            
-            # Register job processors
-            job_manager.register_processor(
-                JobType.IMAGE_PROCESSING,
-                job_processors.get_image_processor
-            )
-            job_manager.register_processor(
-                JobType.VIDEO_PROCESSING,
-                job_processors.get_video_processor
-            )
-            job_manager.register_processor(
-                JobType.BATCH_PROCESSING,
-                job_processors.get_batch_processor
-            )
-            
-            # Start workers
-            job_manager.start_workers()
-            
-            logger.info("Job manager initialized and workers started")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize job manager: {str(e)}")
-            job_manager = None
-
-# Lifespan context manager
+# Lifespan context manager - SIMPLIFIED
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage application lifecycle events"""
-    global processor, job_manager
+    """Manage application lifecycle events - Simplified version"""
+    global processor
     
     # Startup
-    logger.info("Starting FastAPI Processing Server", extra={
+    logger.info("Starting FastAPI Processing Server - Simplified for Django Integration", extra={
         "version": settings.APP_VERSION,
         "environment": settings.ENVIRONMENT,
         "host": settings.HOST,
         "port": settings.PORT,
+        "save_processed_images": settings.SAVE_PROCESSED_IMAGES,
+        "return_base64_images": settings.RETURN_BASE64_IMAGES,
     })
     
     # Log directory creation
     logger.info("Application directories created", extra={
-        "upload_dir": str(settings.UPLOAD_PATH),
         "models_dir": str(settings.MODELS_PATH),
-        "processed_dir": str(settings.PROCESSED_PATH),
+        "temp_dir": str(settings.TEMP_PATH),
     })
     
-    # Initialize image processor
+    # Initialize image processor only (no job queue)
     try:
         if init_processor():
             logger.info("Image processor initialized successfully")
+            processor = get_processor()
         else:
             logger.error("Failed to initialize image processor")
     except Exception as e:
         logger.error(f"Failed to initialize image processor: {str(e)}")
     
-    # Initialize job manager
-    init_job_manager()
+    # Log available models
+    if processor:
+        try:
+            models = processor.get_available_models()
+            logger.info(f"Available models: {len(models)}", extra={
+                "models": [m.get('name', 'unknown') for m in models]
+            })
+        except Exception as e:
+            logger.warning(f"Could not get model list: {str(e)}")
     
     yield
     
-    # Shutdown
-    if job_manager:
-        job_manager.shutdown()
-        logger.info("Job manager shutdown complete")
-    
+    # Shutdown - Simplified
     logger.info("Shutting down FastAPI Processing Server")
 
 # Create FastAPI app with lifespan
@@ -164,13 +130,7 @@ async def add_process_time_header(request: Request, call_next):
     response.headers["X-Processing-Time"] = str(process_time)
     
     # Log completed request
-    logger.api_log(
-        endpoint=request.url.path,
-        method=request.method,
-        status_code=response.status_code,
-        processing_time=process_time,
-        client_ip=request.client.host if request.client else "unknown",
-    )
+    logger.debug(f"Request completed: {request.method} {request.url.path} - {response.status_code} in {process_time:.3f}s")
     
     return response
 
@@ -182,7 +142,7 @@ async def apply_rate_limit(request: Request, call_next):
 # Include API routers
 app.include_router(api_v1_router)
 
-# Exception handlers
+# Exception handlers (keep these)
 @app.exception_handler(ProcessingException)
 async def processing_exception_handler(request: Request, exc: ProcessingException):
     """Handle custom processing exceptions"""
@@ -278,68 +238,62 @@ async def general_exception_handler(request: Request, exc: Exception):
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content=response_content,
     )
-    
-# Health check endpoint
+
+# Root endpoint - SIMPLIFIED
 @app.get("/", tags=["health"])
 async def root():
-    """Root endpoint with basic info"""
-    global processor, job_manager
+    """Root endpoint with basic info - Simplified for Django architecture"""
+    global processor
     
-    models_status = "not_initialized"
+    # Get processor status
+    processor_status = "not_initialized"
+    models_status = "unknown"
+    
     if processor:
-        models = processor.get_available_models()
-        loaded_models = [m for m in models if m.get('loaded')]
-        models_status = f"{len(loaded_models)}/{len(models)} models loaded"
-    
-    job_status = "not_initialized"
-    if job_manager:
+        processor_status = "initialized"
         try:
-            stats = job_manager.get_job_stats()
-            # Handle None stats or None values
-            if stats:
-                # Use processing_jobs for active jobs
-                processing_jobs = stats.processing_jobs if stats.processing_jobs is not None else 0
-                completed_jobs = stats.completed_jobs if stats.completed_jobs is not None else 0
-                job_status = f"{processing_jobs} active, {completed_jobs} completed"
-            else:
-                job_status = "no stats available"
-        except Exception as e:
-            logger.error(f"Failed to get job stats: {str(e)}")
-            job_status = "error"
-    
-    processing_stats = "not_available"
-    if processor:
-        try:
-            stats = processor._get_processing_statistics()
-            processing_stats = f"{stats['total_images_processed']} images, {stats['total_detections']} detections"
+            models = processor.get_available_models()
+            loaded_models = [m for m in models if m.get('loaded')]
+            models_status = f"{len(loaded_models)}/{len(models)} models loaded"
         except:
-            pass
+            models_status = "error"
     
     return {
-        "message": f"Welcome to {settings.APP_NAME}",
+        "message": f"Welcome to {settings.APP_NAME} - Processing Server",
         "version": settings.APP_VERSION,
         "status": "operational",
         "environment": settings.ENVIRONMENT,
+        "architecture": "Stateless Processing Server for Django",
+        "database": "None (Django handles storage)",
+        "processor_status": processor_status,
         "models_status": models_status,
-        "job_status": job_status,
-        "processing_stats": processing_stats,
-        "documentation": "/docs" if settings.ENVIRONMENT != "production" else None,
-        "health_check": "/health",
-        "api_v1": "/api/v1",
-        "advanced_features": {
-            "crowd_detection": "/api/v1/advanced/crowd-detection",
-            "vehicle_counting": "/api/v1/advanced/vehicle-counting",
-            "statistics": "/api/v1/advanced/processing-statistics"
+        "configuration": {
+            "save_processed_images": settings.SAVE_PROCESSED_IMAGES,
+            "return_base64_images": settings.RETURN_BASE64_IMAGES,
+            "max_image_size_mb": settings.MAX_IMAGE_SIZE / (1024 * 1024),
+            "max_video_size_mb": settings.MAX_VIDEO_SIZE / (1024 * 1024),
+        },
+        "endpoints": {
+            "image_processing": "/api/v1/process/image",
+            "video_processing": "/api/v1/process/video",
+            "health_check": "/health",
+            "models": "/api/v1/process/models",
+            "docs": "/docs" if settings.ENVIRONMENT != "production" else None,
+        },
+        "integration": {
+            "django_compatible": True,
+            "data_format": "JSON with optional base64 images",
+            "authentication": "API Key required for processing endpoints",
         }
     }
 
+# Health check endpoint - SIMPLIFIED
 @app.get("/health", tags=["health"], response_model=Dict[str, Any])
 async def health_check():
-    """Basic health check"""
-    global processor, job_manager
+    """Basic health check - Simplified"""
+    global processor
     
     processor_status = "initialized" if processor else "not_initialized"
-    job_manager_status = "initialized" if job_manager else "not_initialized"
     
     return {
         "status": "healthy",
@@ -348,10 +302,12 @@ async def health_check():
         "version": settings.APP_VERSION,
         "environment": settings.ENVIRONMENT,
         "processor_status": processor_status,
-        "job_manager_status": job_manager_status,
+        "database": "none",  # No database in FastAPI
+        "architecture": "stateless_processing",
+        "django_integration": True,
     }
-    
 
+# Test endpoints (optional - keep for debugging)
 @app.post("/api/v1/test/image")
 async def test_process_image(image: UploadFile = File(...)):
     """Test endpoint to debug image processing"""
@@ -368,8 +324,43 @@ async def test_process_image(image: UploadFile = File(...)):
             "filename": image.filename,
             "size_bytes": len(contents),
             "content_type": image.content_type,
-            "message": "Test endpoint working"
+            "message": "Test endpoint working",
+            "base64_support": settings.RETURN_BASE64_IMAGES,
         }
     except Exception as e:
         logger.error(f"Test endpoint error: {str(e)}")
         raise
+
+@app.post("/api/v1/simple/process/video")
+async def simple_process_video(file: UploadFile = File(...)):
+    """Simple video processing endpoint for testing"""
+    try:
+        # Read the video
+        contents = await file.read()
+        
+        # Log some info
+        logger.info(f"Simple video endpoint: Received {file.filename}, size: {len(contents)} bytes")
+        
+        # Generate a job ID
+        import uuid
+        job_id = f"video_{uuid.uuid4().hex[:8]}"
+        
+        # Return mock response
+        return {
+            "job_id": job_id,
+            "status": "submitted",
+            "message": "Video submitted for processing",
+            "estimated_completion": "60 seconds",
+            "base64_key_frames": settings.RETURN_BASE64_IMAGES,
+        }
+    except Exception as e:
+        logger.error(f"Simple video endpoint error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Serve processed images for debugging only (if enabled)
+if settings.SAVE_PROCESSED_IMAGES and settings.PROCESSED_IMAGES_PATH.exists():
+    app.mount("/media/processed", StaticFiles(directory=str(settings.PROCESSED_IMAGES_PATH)), name="processed-media")
+    logger.info(f"Serving processed images from: {settings.PROCESSED_IMAGES_PATH}")
+    logger.warning("WARNING: Image serving is enabled for debugging only. Disable SAVE_PROCESSED_IMAGES in production.")
+else:
+    logger.info("Processed image serving is disabled (SAVE_PROCESSED_IMAGES=False)")
