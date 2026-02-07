@@ -1,0 +1,53 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.ipynb_checkpoints
+
+# Your application directories (but keep models!)
+processed/
+temp/
+uploads/
+logs/
+
+# Large media files
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Test and development files
+test_*
+debug_*
+*.log
+*.sqlite3
+*.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.local
+*.env
+
+# Documentation
+README.md
+LICENSE
+CONTRIBUTING.md
+
+# Build files
+docker-compose.yml
